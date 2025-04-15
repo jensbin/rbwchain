@@ -1,9 +1,5 @@
 # rbwchain ✨
 
-[![crates.io](https://img.shields.io/crates/v/rbwchain.svg)](https://crates.io/crates/rbwchain) <!-- Placeholder: Replace if/when published -->
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](./LICENSE-MIT) <!-- Placeholder: Add LICENSE files -->
-<!-- [![Build Status](...)](...) --> <!-- Placeholder: Add CI badge -->
-
 `rbwchain` is a command-line utility designed to securely execute commands by injecting secrets fetched from [`rbw`](https://github.com/doy/rbw), a CLI for Bitwarden. It provides two methods for passing secrets to the child process:
 
 1.  **Environment Variables (Default):** Parses the `rbw` note content for `KEY=VALUE` pairs and sets them as environment variables.
@@ -127,12 +123,6 @@ In the first example, `kubectl` will be executed with the `KUBECONFIG_TMP` envir
 
 ---
 
-### Mode 3: Using with alias
-
-Instead of always running `rbwchain my-exoscaleconfig exo`, create an alias `alias exo=rbwchain my-exoscaleconfig -f EXOSCALE_CONFIG exo` to always fetch the config.
-
----
-
 ## Environment Variables Set by `rbwchain` 📦
 
 `rbwchain` always sets the following environment variables for the child process:
@@ -154,16 +144,6 @@ Additionally:
     *   The specified environment variable name for file mode (`-f NAME`) is empty.
 *   If the child command executes successfully or fails, `rbwchain` will exit with the **same exit code** as the child command.
 *   If the child command is terminated by a signal (on Unix-like systems), `rbwchain` will exit with `128 + signal_number`, mimicking standard shell behavior.
-
-## Contributing 🤝
-
-Contributions are welcome! Please feel free to open issues or submit pull requests. Ensure code is formatted with `cargo fmt` and passes `cargo clippy`.
-
-## License 📄
-
-This project is licensed under:
-
-*   MIT license ([LICENSE-MIT](./LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 ## Inspiration
 
