@@ -53,7 +53,7 @@ rbwchain <SECRET_NOTE> [-f ENV_VAR_NAME | --file ENV_VAR_NAME] [-d] <COMMAND> [A
 ```
 
 *   `<SECRET_NOTE>`: The name of the note in your Bitwarden vault (as accessed by `rbw get <SECRET_NOTE>`).
-*   `-f ENV_VAR_NAME` or `--file ENV_VAR_NAME`: (Optional) Use temporary file mode. The path to the temporary file containing the secret content will be stored in the environment variable named `ENV_VAR_NAME`.
+*   `-f ENV_VAR_NAME[.EXT]` or `--file ENV_VAR_NAME[.EXT]`: (Optional) Use temporary file mode. The path to the temporary file containing the secret content will be stored in the environment variable named `ENV_VAR_NAME`, an optional `EXT` is appended to the temporary file.
 *   `-d` enable debug mode`.
 *   `<COMMAND>`: The command to execute.
 *   `[ARGS...]`: Arguments to pass to the command.
@@ -116,10 +116,8 @@ defaultaccount = "my-account"
 
 ```bash
 # Run exo using the config from the 'my-exosclaleconfig' note (exo is honoring EXOSCALE_CONFIG)
-rbwchain -f EXOSCALE_CONFIG my-exoscaleconfig exo compute instance list
+rbwchain -f EXOSCALE_CONFIG.toml my-exoscaleconfig exo compute instance list
 ```
-
-In the first example, `kubectl` will be executed with the `KUBECONFIG_TMP` environment variable set to `/tmp/some_random_name.tmp` (the actual path will vary), and that file will contain the content of the `my-kubeconfig` note.
 
 ---
 

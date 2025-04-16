@@ -9,7 +9,7 @@ use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::str;
-use tempfile::NamedTempFile;
+use tempfile::{Builder, NamedTempFile};
 use which::which;
 
 // --- Constants ---
@@ -61,11 +61,6 @@ fn get_secret_content_from_rbw(secret_note: &str) -> Result<String, Box<dyn Erro
     if !output.status.success() {
         let stderr_output = String::from_utf8_lossy(&output.stderr);
         // Use the dedicated error printer
-        // Note: We return the error here, so the message might be printed again by the caller,
-        // but having it here gives immediate context if rbw fails.
-        // Consider if double printing is acceptable or if the error message should be
-        // constructed and returned for the main handler to print once.
-        // For now, let's keep it simple and potentially print twice in case of error.
         error_eprintln(format_args!(
             "Command '{}' failed with status {}: {}",
             rbw_cmd_display,
@@ -136,7 +131,8 @@ fn parse_env_vars(
     about = "Executes a command with secrets from rbw, either as environment variables or via a temporary file.",
     long_about = "This program reads secrets from a specified rbw note. \
 By default, it parses the secrets as KEY=VALUE pairs and sets them as environment variables for the child command. \
-If -f/--file is used, it writes the raw secret content to a temporary file and sets the specified environment variable to its path. \
+If -f/--file is used with ENV_VAR_NAME[.EXT], it writes the raw secret content to a temporary file with the given suffix \
+(if provided) and sets the ENV_VAR_NAME environment variable to its path. \
 Error messages are always printed to stderr. Use --debug for verbose output.",
     // Allows arguments like `-v` to be passed to the child command
     allow_hyphen_values = true,
@@ -150,9 +146,10 @@ struct Cli {
 
     /// Provide secrets via a temporary file path set in an environment variable.
     /// Writes the raw secret content to a temp file and sets ENV_VAR_NAME=</path/to/tempfile>
-    /// for the child command.
-    #[arg(short = 'f', long = "file", value_name = "ENV_VAR_NAME")]
-    file_env_var: Option<OsString>,
+    /// for the child command. The value can be `ENV_VAR_NAME` or `ENV_VAR_NAME.EXT`.
+    /// If `.EXT` is provided, the temporary file will have that extension.
+    #[arg(short = 'f', long = "file", value_name = "ENV_VAR_NAME[.EXT]")]
+    file_env_var: Option<String>,
 
     /// Enable debug logging to stderr.
     #[arg(long, short = 'd', action = clap::ArgAction::SetTrue)]
@@ -216,11 +213,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     command_to_run.args(&cli.args);
 
     // Prepare environment variables map to be passed to the command
-    let mut final_env_vars = HashMap::new();
+    // Use OsString for keys and values to handle non-UTF8 data if necessary,
+    // although most interaction here is UTF8 based.
+    let mut final_env_vars: HashMap<OsString, OsString> = HashMap::new();
 
     // Add standard wrapper variables first. These are always set.
     final_env_vars.insert(
-        "RBWCHAIN_VERSION".into(), // Use .into() for OsString conversion if needed later
+        "RBWCHAIN_VERSION".into(), // Use .into() for OsString conversion
         OsString::from(env!("CARGO_PKG_VERSION")),
     );
     final_env_vars.insert(
@@ -232,40 +231,58 @@ fn main() -> Result<(), Box<dyn Error>> {
         final_env_vars.insert("RBWCHAIN_DEBUG".into(), OsString::from("1"));
     }
 
-
     // Keep temp file alive until command finishes if using file mode
+    // `NamedTempFile` automatically deletes the file when dropped.
     let mut temp_file_guard: Option<NamedTempFile> = None;
 
-    if let Some(env_var_name_os) = &cli.file_env_var {
+    if let Some(env_var_spec) = &cli.file_env_var {
         // --- File Mode ---
-        // Convert OsString to String for validation and logging. Use lossy for robustness.
-        let env_var_name = env_var_name_os.to_string_lossy();
-        if env_var_name.is_empty() {
-            // Use the dedicated error printer
+        // Split the spec into ENV_VAR_NAME and an optional extension EXT
+        // We use rsplit_once to get the *last* dot, treating everything before it as the name.
+        let (env_var_name_str, suffix_str) = match env_var_spec.rsplit_once('.') {
+            Some((name, ext)) if !name.is_empty() => (name, Some(format!(".{}", ext))), // Prepend dot if extension exists
+            _ => (env_var_spec.as_str(), None), // No dot, or starts with dot: whole string is name, no suffix
+        };
+
+        // Validate that the derived environment variable name is not empty
+        if env_var_name_str.is_empty() {
             error_eprintln(format_args!(
-                "Specified environment variable name for -f/--file option is empty."
+                "Invalid value for -f/--file: '{}'. The environment variable name part cannot be empty.",
+                env_var_spec
             ));
-            return Err("Empty environment variable name for file mode.".into());
+            return Err("Empty environment variable name derived from file mode spec.".into());
         }
 
+        // Convert the variable name to OsString for insertion into the map
+        let env_var_name_os = OsString::from(env_var_name_str);
+
         debug_eprintln(
             debug_enabled,
             format_args!(
-                "Using file mode. Setting environment variable '{}'.",
-                env_var_name
+                "Using file mode. Variable: '{}', Suffix: '{}'",
+                env_var_name_str,
+                suffix_str.as_deref().unwrap_or("<none>")
             ),
         );
 
-        // Create temp file
-        let mut temp_file = NamedTempFile::new()
+        // Create temp file using the builder to apply the suffix
+        let mut temp_file_builder = Builder::new();
+        if let Some(ref suffix) = suffix_str {
+            temp_file_builder.suffix(suffix);
+        }
+
+        let mut temp_file = temp_file_builder
+            .tempfile() // Creates the named temporary file
             .map_err(|e| format!("Failed to create temporary file: {}", e))?;
+
         debug_eprintln(
             debug_enabled,
             format_args!(
-                "Created temporary file container at: {}",
-                temp_file.path().display()
+                "Created temporary file: {}",
+                temp_file.path().display() // Log actual path
             ),
         );
+
 
         // Write content to temp file
         temp_file
@@ -285,18 +302,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Get the path as an OsString (needed for .env)
         let temp_file_path_os = temp_file.path().as_os_str().to_os_string();
 
-        // Add the *specified* environment variable to the *path* of the temp file to the map.
-        // Use the original OsString key provided by the user.
+        // Add the *parsed* environment variable name pointing to the *path* of the temp file.
         final_env_vars.insert(env_var_name_os.clone(), temp_file_path_os.clone());
 
-        // Move the temp_file into the guard to keep it alive.
+        // Move the temp_file into the guard to keep it alive until the end of `main`.
         temp_file_guard = Some(temp_file);
 
         debug_eprintln(
             debug_enabled,
             format_args!(
                 "Prepared environment variable: {}={}",
-                env_var_name, // Log user-provided name lossily
+                env_var_name_str, // Log the string version of the key
                 temp_file_path_os.to_string_lossy() // Log path lossily
             ),
         );
@@ -307,13 +323,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             format_args!("Using environment variable mode."),
         );
 
-        // Parse the fetched content into environment variables
+        // Parse the fetched content into environment variables (String -> String)
         // Pass the debug flag to control warnings during parsing
         let parsed_vars = parse_env_vars(&secret_content, debug_enabled)?;
 
         if parsed_vars.is_empty() && !secret_content.trim().is_empty() {
             // Only warn if the secret content wasn't empty but we didn't parse anything.
-            // Use the conditional warning printer
             warn_eprintln(
                 debug_enabled,
                 format_args!(
@@ -324,16 +339,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Merge parsed vars into final_env_vars. Parsed vars take precedence if keys conflict.
-        // Need to convert String key/value from parsed_vars to OsString for the final map.
+        // Convert String key/value from parsed_vars to OsString for the final map.
         for (key, value) in parsed_vars {
             final_env_vars.insert(OsString::from(key), OsString::from(value));
         }
 
         // Calculate counts *after* merging
-        let parsed_count = final_env_vars.len().saturating_sub(
-              2 + if debug_enabled {1} else {0} // Subtract base vars + conditional debug var
-            );
-        let default_count = final_env_vars.len() - parsed_count;
+        let standard_var_count = 2 + if debug_enabled {1} else {0}; // Base vars + conditional debug var
+        let parsed_count = final_env_vars.len().saturating_sub(standard_var_count);
+
 
         debug_eprintln(
             debug_enabled,
@@ -341,7 +355,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "Injecting {} environment variable(s) ({} parsed + {} standard).",
                 final_env_vars.len(),
                 parsed_count,
-                default_count,
+                standard_var_count,
             ),
         );
          if debug_enabled {
@@ -387,9 +401,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // Explicitly drop the guard *after* the child process has finished.
+    // This ensures the temp file exists for the duration of the child process.
     drop(temp_file_guard);
     if debug_enabled && cli.file_env_var.is_some() {
-         debug_eprintln(debug_enabled, format_args!("Temporary file guard dropped."));
+         debug_eprintln(debug_enabled, format_args!("Temporary file guard dropped (file deleted)."));
     }
 
 
@@ -398,6 +413,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     handle_exit_status(status, debug_enabled);
 
     // Note: handle_exit_status never returns (it exits).
+    // The Ok(()) below is technically unreachable but needed for the type signature.
+    // Ok(())
 }
 
 // --- Exit Status Handling ---
