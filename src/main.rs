@@ -133,9 +133,8 @@ fn parse_env_vars(
 By default, it parses the secrets as KEY=VALUE pairs and sets them as environment variables for the child command. \
 If -f/--file is used with ENV_VAR_NAME[.EXT], it writes the raw secret content to a temporary file with the given suffix \
 (if provided) and sets the ENV_VAR_NAME environment variable to its path. \
-Error messages are always printed to stderr. Use --debug for verbose output.",
-    // Allows arguments like `-v` to be passed to the child command
-    allow_hyphen_values = true,
+Error messages are always printed to stderr. Use --debug for verbose output.\n\n\
+Arguments after SECRET_NOTE (including flags like --help) are passed directly to the COMMAND.",
     // Capture all trailing arguments for the child command
     trailing_var_arg = true
 )]
@@ -155,13 +154,9 @@ struct Cli {
     #[arg(long, short = 'd', action = clap::ArgAction::SetTrue)]
     debug: bool,
 
-    /// The command to execute
-    #[arg(required = true)]
-    command: OsString,
-
-    /// Arguments to pass to the command
-    #[arg(required = false)]
-    args: Vec<OsString>,
+    /// The command and its arguments to execute
+    #[arg(required = true, value_name = "COMMAND_AND_ARGS")]
+    command_and_args: Vec<OsString>,
 }
 
 // --- Main Logic ---
@@ -207,10 +202,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // 3. Set up the Command
-    let mut command_to_run = Command::new(&cli.command);
+    // Extract the command and its arguments from the combined list
+    if cli.command_and_args.is_empty() {
+        // This should ideally be caught by clap's 'required=true'
+        error_eprintln(format_args!("No command provided to execute."));
+        return Err("No command specified.".into());
+    }
+    let command_to_exec = &cli.command_and_args[0];
+    let command_args = &cli.command_and_args[1..]; // Slice of the remaining elements
+
+    // Create the Command process builder
+    let mut command_to_run = Command::new(command_to_exec);
 
     // Set the arguments for the command
-    command_to_run.args(&cli.args);
+    command_to_run.args(command_args);
 
     // Prepare environment variables map to be passed to the command
     // Use OsString for keys and values to handle non-UTF8 data if necessary,
@@ -381,8 +386,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         debug_enabled,
         format_args!(
             "Executing command: {} {}",
-            cli.command.to_string_lossy(),
-            cli.args
+            command_to_exec.to_string_lossy(),
+            command_args
                 .iter()
                 .map(|a| a.to_string_lossy())
                 .collect::<Vec<_>>()
@@ -393,7 +398,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 4. Execute the Command and Handle Exit Status
     let status = command_to_run
         .status()
-        .map_err(|e| format!("Failed to execute command '{}': {}", cli.command.to_string_lossy(), e))?;
+        .map_err(|e| format!("Failed to execute command '{}': {}", command_to_exec.to_string_lossy(), e))?; // Use extracted command in error
 
     debug_eprintln(
         debug_enabled,
@@ -414,7 +419,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Note: handle_exit_status never returns (it exits).
     // The Ok(()) below is technically unreachable but needed for the type signature.
-    // Ok(())
+    // Ok(()) // Not strictly needed as handle_exit_status diverges
 }
 
 // --- Exit Status Handling ---
